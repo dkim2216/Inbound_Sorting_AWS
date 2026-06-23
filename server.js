@@ -7,6 +7,8 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
 import nodemailer from 'nodemailer';
+import { SESClient, SendRawEmailCommand } from '@aws-sdk/client-ses';
+import ExcelJS from 'exceljs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -40,6 +42,14 @@ function escapeHtml(value = '') {
 }
 
 const LOCK_EXPIRY_MINUTES = 10;
+
+// ── AWS SES client (uses IAM role if on EC2, or AWS_ACCESS_KEY_ID env vars) ──
+const sesClient = new SESClient({ region: process.env.AWS_REGION || 'ap-southeast-1' });
+
+// ── Nodemailer transporter using SES ──────────────────────────────────────────
+const transporter = nodemailer.createTransport({
+  SES: { ses: sesClient, aws: { SendRawEmailCommand } }
+});
 
 async function initDB() {
   try {
@@ -89,10 +99,8 @@ async function initDB() {
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_manifest_case ON manifest(case_id)`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_sku_locks ON sku_locks(session_id, case_id, sku)`);
 
-    // Enable pgcrypto for password hashing (managed via Neon SQL editor)
     await pool.query(`CREATE EXTENSION IF NOT EXISTS pgcrypto`);
 
-    // ── Users table (managed directly in Neon SQL editor) ──────────
     await pool.query(`
       CREATE TABLE IF NOT EXISTS users (
         id SERIAL PRIMARY KEY,
@@ -115,11 +123,184 @@ async function purgeExpiredLocks() {
   );
 }
 
+// ── Helper: build Excel workbook from session data ────────────────────────────
+async function buildExcel(session, items, total, completed, discrepancyCount, completionRate) {
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'Inbound Hub Scanner';
+  wb.created = new Date();
+
+  // ── Sheet 1: Summary ──────────────────────────────────────────────
+  const ws1 = wb.addWorksheet('Summary');
+  ws1.columns = [
+    { header: 'Field', key: 'field', width: 28 },
+    { header: 'Value', key: 'value', width: 30 },
+  ];
+
+  // Header style
+  ws1.getRow(1).eachCell(cell => {
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0D1B4B' } };
+    cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 12 };
+    cell.alignment = { vertical: 'middle', horizontal: 'center' };
+    cell.border = { bottom: { style: 'medium', color: { argb: 'FF00C9A7' } } };
+  });
+  ws1.getRow(1).height = 24;
+
+  const summaryRows = [
+    { field: 'Session Name', value: session.name },
+    { field: 'Date', value: new Date(session.created_at).toLocaleString() },
+    { field: 'Total Items', value: total },
+    { field: 'Completed', value: completed },
+    { field: 'Incomplete', value: total - completed },
+    { field: 'Rows with Discrepancy', value: discrepancyCount },
+    { field: 'Completion Rate', value: `${completionRate}%` },
+  ];
+
+  summaryRows.forEach((row, i) => {
+    const r = ws1.addRow(row);
+    r.height = 20;
+    r.getCell('field').font = { bold: true };
+    // Highlight completion rate
+    if (row.field === 'Completion Rate') {
+      r.getCell('value').font = {
+        bold: true, size: 14,
+        color: { argb: completionRate === 100 ? 'FF008000' : 'FFD97706' }
+      };
+    }
+    if (row.field === 'Completed') r.getCell('value').font = { bold: true, color: { argb: 'FF008000' } };
+    if (row.field === 'Incomplete') r.getCell('value').font = { bold: true, color: { argb: 'FFDC2626' } };
+    if (row.field === 'Rows with Discrepancy') r.getCell('value').font = { bold: true, color: { argb: 'FFD97706' } };
+    // Alternating row bg
+    if (i % 2 === 0) {
+      r.eachCell(cell => {
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF8FAFB' } };
+      });
+    }
+  });
+
+  // ── Sheet 2: Dealer Summary ───────────────────────────────────────
+  const ws2 = wb.addWorksheet('Dealer Summary');
+  ws2.columns = [
+    { header: 'Dealer', key: 'dealer', width: 28 },
+    { header: 'Sort Group', key: 'sort_group', width: 16 },
+    { header: 'Total Items', key: 'total', width: 14 },
+    { header: 'Completed', key: 'completed', width: 14 },
+    { header: 'Incomplete', key: 'incomplete', width: 14 },
+    { header: 'Original Qty', key: 'orig_qty', width: 15 },
+    { header: 'Actual Qty', key: 'actual_qty', width: 15 },
+    { header: 'Discrepancy', key: 'discrepancy', width: 15 },
+  ];
+  ws2.getRow(1).eachCell(cell => {
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0D1B4B' } };
+    cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+    cell.alignment = { vertical: 'middle', horizontal: 'center' };
+    cell.border = { bottom: { style: 'medium', color: { argb: 'FF00C9A7' } } };
+  });
+  ws2.getRow(1).height = 24;
+
+  // Group by dealer + sort_group
+  const dealerGroupMap = {};
+  items.forEach(item => {
+    const key = `${item.dealer}||${item.sort_group}`;
+    if (!dealerGroupMap[key]) {
+      dealerGroupMap[key] = { dealer: item.dealer, sort_group: item.sort_group, total: 0, completed: 0, orig_qty: 0, actual_qty: 0 };
+    }
+    dealerGroupMap[key].total += 1;
+    if (item.done) dealerGroupMap[key].completed += 1;
+    dealerGroupMap[key].orig_qty += toInt(item.qty);
+    dealerGroupMap[key].actual_qty += toInt(item.actual_qty);
+  });
+
+  Object.values(dealerGroupMap)
+    .sort((a, b) => a.dealer.localeCompare(b.dealer) || a.sort_group.localeCompare(b.sort_group))
+    .forEach((row, i) => {
+      const disc = row.actual_qty - row.orig_qty;
+      const r = ws2.addRow({
+        dealer: row.dealer,
+        sort_group: row.sort_group,
+        total: row.total,
+        completed: row.completed,
+        incomplete: row.total - row.completed,
+        orig_qty: row.orig_qty,
+        actual_qty: row.actual_qty,
+        discrepancy: disc > 0 ? `+${disc}` : disc,
+      });
+      r.height = 20;
+      if (i % 2 === 0) {
+        r.eachCell(cell => {
+          cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF8FAFB' } };
+        });
+      }
+      if (disc !== 0) {
+        r.getCell('discrepancy').font = { bold: true, color: { argb: disc > 0 ? 'FF1D4ED8' : 'FFDC2626' } };
+      }
+      r.getCell('incomplete').font = row.total - row.completed > 0
+        ? { color: { argb: 'FFDC2626' } } : {};
+    });
+
+  // ── Sheet 3: Detailed Items ───────────────────────────────────────
+  const ws3 = wb.addWorksheet('Detailed Items');
+  ws3.columns = [
+    { header: 'Case ID', key: 'case_id', width: 18 },
+    { header: 'SKU', key: 'sku', width: 18 },
+    { header: 'Description', key: 'item_description', width: 32 },
+    { header: 'Dealer', key: 'dealer', width: 26 },
+    { header: 'Sort Group', key: 'sort_group', width: 14 },
+    { header: 'Original Qty', key: 'qty', width: 14 },
+    { header: 'Actual Qty', key: 'actual_qty', width: 13 },
+    { header: 'Discrepancy', key: 'discrepancy', width: 14 },
+    { header: 'Remark', key: 'remark', width: 24 },
+    { header: 'Status', key: 'status', width: 26 },
+  ];
+  ws3.getRow(1).eachCell(cell => {
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0D1B4B' } };
+    cell.font = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+    cell.alignment = { vertical: 'middle', horizontal: 'center' };
+    cell.border = { bottom: { style: 'medium', color: { argb: 'FF00C9A7' } } };
+  });
+  ws3.getRow(1).height = 24;
+
+  items.forEach((item, i) => {
+    const disc = toInt(item.discrepancy_qty);
+    const status = item.done
+      ? disc !== 0 ? '✓ Completed with discrepancy' : '✓ Completed'
+      : '✗ Incomplete';
+
+    const r = ws3.addRow({
+      case_id: item.case_id,
+      sku: item.sku,
+      item_description: item.item_description,
+      dealer: item.dealer,
+      sort_group: item.sort_group,
+      qty: toInt(item.qty),
+      actual_qty: toInt(item.actual_qty),
+      discrepancy: disc > 0 ? `+${disc}` : disc,
+      remark: item.remark,
+      status,
+    });
+    r.height = 19;
+
+    // Row colour by status
+    const bg = !item.done ? 'FFF8D7DA' : disc !== 0 ? 'FFFFF3CD' : 'FFD4EDDA';
+    r.eachCell(cell => {
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: bg } };
+    });
+    if (disc !== 0) {
+      r.getCell('discrepancy').font = { bold: true, color: { argb: disc > 0 ? 'FF1D4ED8' : 'FFDC2626' } };
+    }
+  });
+
+  // Auto-filter on all sheets
+  [ws2, ws3].forEach(ws => {
+    ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: ws.columns.length } };
+  });
+
+  return wb.xlsx.writeBuffer();
+}
+
 // ════════════════════════════════════════════════════════════════════════════════
 // AUTH ENDPOINTS
 // ════════════════════════════════════════════════════════════════════════════════
 
-// Login: verify username + password using pgcrypto
 app.post('/api/auth/login', async (req, res) => {
   const { username, password } = req.body || {};
   if (!username || !password) {
@@ -147,8 +328,6 @@ app.post('/api/auth/login', async (req, res) => {
 // LOCK ENDPOINTS
 // ════════════════════════════════════════════════════════════════════════════════
 
-// Acquire lock on a Case+SKU
-// POST /api/lock  body: { session_id, case_id, sku, operator }
 app.post('/api/lock', async (req, res) => {
   const { session_id, case_id, sku, operator } = req.body;
   if (!session_id || !case_id || !sku || !operator) {
@@ -158,7 +337,6 @@ app.post('/api/lock', async (req, res) => {
   try {
     await purgeExpiredLocks();
 
-    // Check if already locked by someone else
     const existing = await pool.query(
       `SELECT locked_by, locked_at FROM sku_locks
        WHERE session_id = $1 AND case_id = $2 AND sku = $3`,
@@ -168,7 +346,6 @@ app.post('/api/lock', async (req, res) => {
     if (existing.rows.length > 0) {
       const lock = existing.rows[0];
       if (lock.locked_by === operator) {
-        // Same operator re-acquiring — refresh timestamp
         await pool.query(
           `UPDATE sku_locks SET locked_at = NOW()
            WHERE session_id = $1 AND case_id = $2 AND sku = $3`,
@@ -176,7 +353,6 @@ app.post('/api/lock', async (req, res) => {
         );
         return res.json({ ok: true, locked_by: operator });
       }
-      // Locked by someone else
       return res.status(409).json({
         error: 'locked',
         locked_by: lock.locked_by,
@@ -184,7 +360,6 @@ app.post('/api/lock', async (req, res) => {
       });
     }
 
-    // Acquire lock
     await pool.query(
       `INSERT INTO sku_locks (session_id, case_id, sku, locked_by)
        VALUES ($1, $2, $3, $4)`,
@@ -198,8 +373,6 @@ app.post('/api/lock', async (req, res) => {
   }
 });
 
-// Release lock
-// DELETE /api/lock  body: { session_id, case_id, sku, operator }
 app.delete('/api/lock', async (req, res) => {
   const { session_id, case_id, sku, operator } = req.body;
   if (!session_id || !case_id || !sku || !operator) {
@@ -218,8 +391,6 @@ app.delete('/api/lock', async (req, res) => {
   }
 });
 
-// Release ALL locks held by an operator (called on logout / page close)
-// DELETE /api/lock/operator/:operator
 app.delete('/api/lock/operator/:operator', async (req, res) => {
   try {
     await pool.query(
@@ -232,8 +403,6 @@ app.delete('/api/lock/operator/:operator', async (req, res) => {
   }
 });
 
-// POST version of the same — navigator.sendBeacon can ONLY send POST,
-// so tab-close cleanup must hit this route
 app.post('/api/lock/operator/:operator/release', async (req, res) => {
   try {
     await pool.query(
@@ -247,7 +416,7 @@ app.post('/api/lock/operator/:operator/release', async (req, res) => {
 });
 
 // ════════════════════════════════════════════════════════════════════════════════
-// SESSION ENDPOINTS (unchanged from original)
+// SESSION ENDPOINTS
 // ════════════════════════════════════════════════════════════════════════════════
 
 app.get('/api/sessions', async (req, res) => {
@@ -339,7 +508,6 @@ app.get('/api/sessions/:id/cases', async (req, res) => {
   }
 });
 
-// ── Get SKUs for a case — now includes lock info ───────────────────────────────
 app.get('/api/sessions/:id/case/:caseId/skus', async (req, res) => {
   try {
     await purgeExpiredLocks();
@@ -487,6 +655,9 @@ app.get('/api/sessions/:id/case-progress', async (req, res) => {
   }
 });
 
+// ════════════════════════════════════════════════════════════════════════════════
+// COMPLETE JOB — sends email via AWS SES with Excel attachment
+// ════════════════════════════════════════════════════════════════════════════════
 app.post('/api/sessions/:id/complete', async (req, res) => {
   try {
     const sessionId = req.params.id;
@@ -494,6 +665,7 @@ app.post('/api/sessions/:id/complete', async (req, res) => {
     if (sessionResult.rows.length === 0) return res.status(404).json({ error: 'Session not found' });
     const session = sessionResult.rows[0];
 
+    // ── Pull manifest data ──────────────────────────────────────────
     const manifestResult = await pool.query(
       `SELECT case_id, sku, COALESCE(item_description, '') AS item_description,
               dealer, sort_group, qty,
@@ -515,71 +687,127 @@ app.post('/api/sessions/:id/complete', async (req, res) => {
     const discrepancyCount = items.filter(item => toInt(item.discrepancy_qty) !== 0).length;
     const completionRate = total > 0 ? Math.round((completed / total) * 100) : 0;
 
+    // ── Build Excel attachment ──────────────────────────────────────
+    const excelBuffer = await buildExcel(session, items, total, completed, discrepancyCount, completionRate);
+    const filename = `${session.name.replace(/[^a-zA-Z0-9_-]/g, '_')}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+
+    // ── Build HTML email body ───────────────────────────────────────
     let tableHTML = `
-      <table style="width:100%; border-collapse: collapse; margin-top: 15px;">
-        <tr style="background: #333; color: white;">
-          <th style="border: 1px solid #ddd; padding: 10px; text-align: left;">Case</th>
-          <th style="border: 1px solid #ddd; padding: 10px; text-align: left;">SKU</th>
-          <th style="border: 1px solid #ddd; padding: 10px; text-align: left;">Description</th>
-          <th style="border: 1px solid #ddd; padding: 10px; text-align: left;">Dealer</th>
-          <th style="border: 1px solid #ddd; padding: 10px; text-align: left;">Group</th>
-          <th style="border: 1px solid #ddd; padding: 10px; text-align: right;">Original Qty</th>
-          <th style="border: 1px solid #ddd; padding: 10px; text-align: right;">Actual Qty</th>
-          <th style="border: 1px solid #ddd; padding: 10px; text-align: right;">Discrepancy</th>
-          <th style="border: 1px solid #ddd; padding: 10px; text-align: left;">Remark</th>
-          <th style="border: 1px solid #ddd; padding: 10px; text-align: left;">Status</th>
+      <table style="width:100%;border-collapse:collapse;margin-top:15px;font-family:Arial,sans-serif;font-size:13px;">
+        <tr style="background:#0D1B4B;color:white;">
+          <th style="border:1px solid #ddd;padding:10px;text-align:left;">Case</th>
+          <th style="border:1px solid #ddd;padding:10px;text-align:left;">SKU</th>
+          <th style="border:1px solid #ddd;padding:10px;text-align:left;">Description</th>
+          <th style="border:1px solid #ddd;padding:10px;text-align:left;">Dealer</th>
+          <th style="border:1px solid #ddd;padding:10px;text-align:left;">Group</th>
+          <th style="border:1px solid #ddd;padding:10px;text-align:right;">Orig Qty</th>
+          <th style="border:1px solid #ddd;padding:10px;text-align:right;">Actual Qty</th>
+          <th style="border:1px solid #ddd;padding:10px;text-align:right;">Discrepancy</th>
+          <th style="border:1px solid #ddd;padding:10px;text-align:left;">Remark</th>
+          <th style="border:1px solid #ddd;padding:10px;text-align:left;">Status</th>
         </tr>`;
 
     items.forEach((item) => {
       const discrepancy = toInt(item.discrepancy_qty);
       const status = item.done
-        ? discrepancy !== 0 ? '✓ Completed with discrepancy' : '✓ Completed'
+        ? discrepancy !== 0 ? '✓ Done (discrepancy)' : '✓ Done'
         : '✗ Incomplete';
       const bgColor = !item.done ? '#f8d7da' : discrepancy !== 0 ? '#fff3cd' : '#d4edda';
+      const discColor = discrepancy === 0 ? '#374151' : discrepancy > 0 ? '#1d4ed8' : '#dc2626';
 
       tableHTML += `
-        <tr style="background: ${bgColor};">
-          <td style="border: 1px solid #ddd; padding: 10px;">${escapeHtml(item.case_id)}</td>
-          <td style="border: 1px solid #ddd; padding: 10px;">${escapeHtml(item.sku)}</td>
-          <td style="border: 1px solid #ddd; padding: 10px;">${escapeHtml(item.item_description)}</td>
-          <td style="border: 1px solid #ddd; padding: 10px;">${escapeHtml(item.dealer)}</td>
-          <td style="border: 1px solid #ddd; padding: 10px;">${escapeHtml(item.sort_group)}</td>
-          <td style="border: 1px solid #ddd; padding: 10px; text-align: right;">${toInt(item.qty)}</td>
-          <td style="border: 1px solid #ddd; padding: 10px; text-align: right;">${toInt(item.actual_qty)}</td>
-          <td style="border: 1px solid #ddd; padding: 10px; text-align: right; font-weight: bold; color: ${discrepancy === 0 ? '#374151' : discrepancy > 0 ? '#1d4ed8' : '#dc2626'};">
+        <tr style="background:${bgColor};">
+          <td style="border:1px solid #ddd;padding:8px;">${escapeHtml(item.case_id)}</td>
+          <td style="border:1px solid #ddd;padding:8px;">${escapeHtml(item.sku)}</td>
+          <td style="border:1px solid #ddd;padding:8px;">${escapeHtml(item.item_description)}</td>
+          <td style="border:1px solid #ddd;padding:8px;">${escapeHtml(item.dealer)}</td>
+          <td style="border:1px solid #ddd;padding:8px;">${escapeHtml(item.sort_group)}</td>
+          <td style="border:1px solid #ddd;padding:8px;text-align:right;">${toInt(item.qty)}</td>
+          <td style="border:1px solid #ddd;padding:8px;text-align:right;">${toInt(item.actual_qty)}</td>
+          <td style="border:1px solid #ddd;padding:8px;text-align:right;font-weight:bold;color:${discColor};">
             ${discrepancy > 0 ? `+${discrepancy}` : discrepancy}
           </td>
-          <td style="border: 1px solid #ddd; padding: 10px;">${escapeHtml(item.remark)}</td>
-          <td style="border: 1px solid #ddd; padding: 10px; font-weight: bold;">${status}</td>
+          <td style="border:1px solid #ddd;padding:8px;">${escapeHtml(item.remark)}</td>
+          <td style="border:1px solid #ddd;padding:8px;font-weight:bold;">${status}</td>
         </tr>`;
     });
     tableHTML += '</table>';
 
-    const transporter = nodemailer.createTransport({
-      service: 'gmail',
-      auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS }
-    });
+    const rateColor = completionRate === 100 ? '#008000' : '#D97706';
+
+    const emailHtml = `
+      <div style="font-family:Arial,sans-serif;max-width:900px;margin:0 auto;">
+        <div style="background:#0D1B4B;padding:24px 32px;border-radius:8px 8px 0 0;">
+          <h1 style="color:#00C9A7;margin:0;font-size:22px;">Inbound Hub Scanner</h1>
+          <p style="color:#9FB0D8;margin:6px 0 0;">Sorting Session Complete</p>
+        </div>
+        <div style="background:#F8FAFB;padding:24px 32px;border:1px solid #E5E7EB;">
+          <h2 style="color:#0D1B4B;margin-top:0;">${escapeHtml(session.name)}</h2>
+          <p style="color:#64748B;">Completed: <strong>${new Date().toLocaleString()}</strong></p>
+
+          <table style="border-collapse:collapse;margin:16px 0;">
+            <tr>
+              <td style="padding:8px 24px 8px 0;color:#64748B;font-weight:bold;">Total Items</td>
+              <td style="padding:8px 0;font-size:18px;font-weight:bold;color:#0D1B4B;">${total}</td>
+            </tr>
+            <tr>
+              <td style="padding:8px 24px 8px 0;color:#64748B;font-weight:bold;">Completed</td>
+              <td style="padding:8px 0;font-size:18px;font-weight:bold;color:#008000;">${completed} ✓</td>
+            </tr>
+            <tr>
+              <td style="padding:8px 24px 8px 0;color:#64748B;font-weight:bold;">Incomplete</td>
+              <td style="padding:8px 0;font-size:18px;font-weight:bold;color:#DC2626;">${total - completed} ✗</td>
+            </tr>
+            <tr>
+              <td style="padding:8px 24px 8px 0;color:#64748B;font-weight:bold;">Discrepancies</td>
+              <td style="padding:8px 0;font-size:18px;font-weight:bold;color:#D97706;">${discrepancyCount}</td>
+            </tr>
+            <tr>
+              <td style="padding:8px 24px 8px 0;color:#64748B;font-weight:bold;">Completion Rate</td>
+              <td style="padding:8px 0;font-size:24px;font-weight:bold;color:${rateColor};">${completionRate}%</td>
+            </tr>
+          </table>
+
+          <p style="color:#64748B;font-size:13px;">
+            📎 Full detail is in the Excel attachment: <strong>${filename}</strong>
+          </p>
+        </div>
+
+        <div style="padding:0 32px;">
+          <h3 style="color:#0D1B4B;margin-top:24px;">Detailed Items</h3>
+          ${tableHTML}
+        </div>
+
+        <div style="background:#F8FAFB;padding:16px 32px;margin-top:24px;border-top:1px solid #E5E7EB;">
+          <p style="color:#9AA3AD;font-size:12px;margin:0;">
+            Sent automatically by Inbound Hub Scanner · AWS SES · ${new Date().toISOString()}
+          </p>
+        </div>
+      </div>`;
+
+    // ── Send via AWS SES ────────────────────────────────────────────
+    const EMAIL_FROM = process.env.EMAIL_FROM || 'sender@example.com';
+    const EMAIL_TO   = process.env.EMAIL_TO   || 'admin@example.com';
 
     await transporter.sendMail({
-      from: process.env.EMAIL_USER,
-      to: 'jongwonkim93@gmail.com',
-      subject: `Sorting Session Report: ${session.name}`,
-      html: `
-        <h2>Warehouse Sorting Session Report</h2>
-        <p><strong>Session:</strong> ${escapeHtml(session.name)}</p>
-        <p><strong>Date:</strong> ${new Date(session.created_at).toLocaleString()}</p>
-        <h3 style="margin-top: 20px;">Summary</h3>
-        <p><strong>Total Items:</strong> ${total}</p>
-        <p><strong>Completed:</strong> <span style="color:green;font-weight:bold;">${completed} ✓</span></p>
-        <p><strong>Incomplete:</strong> <span style="color:red;font-weight:bold;">${total - completed} ✗</span></p>
-        <p><strong>Rows with discrepancy:</strong> <span style="color:#d97706;font-weight:bold;">${discrepancyCount}</span></p>
-        <p><strong>Completion Rate:</strong> <span style="font-size:20px;font-weight:bold;color:${completionRate === 100 ? 'green' : 'orange'};">${completionRate}%</span></p>
-        <h3 style="margin-top:20px;">Detailed Items</h3>${tableHTML}`
+      from: EMAIL_FROM,
+      to: EMAIL_TO,
+      subject: `[Sorting Complete] ${session.name} — ${completionRate}% · ${completed}/${total} items`,
+      html: emailHtml,
+      attachments: [
+        {
+          filename,
+          content: excelBuffer,
+          contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        },
+      ],
     });
 
-    res.json({ success: true, message: 'Email sent' });
+    console.log(`✓ Completion email sent for session ${sessionId} to ${EMAIL_TO}`);
+    res.json({ success: true, message: 'Email sent', recipient: EMAIL_TO });
+
   } catch (err) {
-    console.error('Email error:', err);
+    console.error('Complete job error:', err);
     res.status(500).json({ error: err.message });
   }
 });
