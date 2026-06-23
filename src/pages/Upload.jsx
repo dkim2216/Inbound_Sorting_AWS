@@ -9,11 +9,42 @@ export default function UploadPage({ onSessionCreated }) {
   const [file, setFile] = useState(null);
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState(null);
+  const [dragging, setDragging] = useState(false);
+
+  const handleFile = (f) => {
+    if (!f) return;
+    if (!f.name.endsWith('.csv')) {
+      setMessage({ type: 'error', text: 'Please upload a CSV file only.' });
+      return;
+    }
+    setFile(f);
+    setMessage(null);
+  };
+
+  const handleDragOver = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragging(true);
+  };
+
+  const handleDragLeave = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragging(false);
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragging(false);
+    const dropped = e.dataTransfer.files?.[0];
+    handleFile(dropped);
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (!name || !file) {
-      setMessage({ type: 'error', text: 'Name and CSV file required' });
+      setMessage({ type: 'error', text: 'Session name and CSV file are required.' });
       return;
     }
 
@@ -51,7 +82,7 @@ export default function UploadPage({ onSessionCreated }) {
   return (
     <div className="p-4 md:p-8 max-w-2xl mx-auto">
       <h2 className="text-2xl md:text-3xl font-bold mb-1" style={{ color: CS_NAVY }}>
-        Upload CSV Manifest
+        Upload Sorting Data
       </h2>
       <p className="text-gray-500 mb-8">
         Create a new sorting session by uploading your warehouse manifest
@@ -71,7 +102,6 @@ export default function UploadPage({ onSessionCreated }) {
             onChange={(e) => setName(e.target.value)}
             placeholder="e.g., Warehouse Batch #1"
             className="w-full px-4 py-2.5 border border-gray-200 rounded-xl text-sm focus:outline-none transition-all"
-            style={{ '--tw-ring-color': CS_TEAL }}
             onFocus={(e) => (e.target.style.borderColor = CS_TEAL)}
             onBlur={(e) => (e.target.style.borderColor = '#E5E7EB')}
           />
@@ -82,28 +112,36 @@ export default function UploadPage({ onSessionCreated }) {
             CSV File
           </label>
           <div
-            className="border-2 border-dashed rounded-xl p-8 text-center transition-colors cursor-pointer"
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+            className="border-2 border-dashed rounded-xl p-8 text-center transition-all cursor-pointer"
             style={{
-              borderColor: file ? CS_TEAL : '#E5E7EB',
-              background: file ? '#E6FAF7' : '#FAFAFA'
+              borderColor: dragging ? CS_TEAL : file ? CS_TEAL : '#E5E7EB',
+              background: dragging ? '#D0F5EF' : file ? '#E6FAF7' : '#FAFAFA',
+              transform: dragging ? 'scale(1.01)' : 'scale(1)',
             }}
           >
             <input
               type="file"
               accept=".csv"
-              onChange={(e) => setFile(e.target.files?.[0])}
+              onChange={(e) => handleFile(e.target.files?.[0])}
               className="hidden"
               id="file-input"
             />
-            <label htmlFor="file-input" className="cursor-pointer">
+            <label htmlFor="file-input" className="cursor-pointer block">
               <Upload
                 size={32}
                 className="mx-auto mb-2"
-                style={{ color: file ? CS_TEAL : '#9CA3AF' }}
+                style={{ color: dragging ? CS_TEAL : file ? CS_TEAL : '#9CA3AF' }}
               />
               {file ? (
                 <p className="font-semibold" style={{ color: CS_TEAL }}>
                   ✓ {file.name}
+                </p>
+              ) : dragging ? (
+                <p className="font-semibold" style={{ color: CS_TEAL }}>
+                  Drop to upload
                 </p>
               ) : (
                 <>
@@ -129,8 +167,9 @@ export default function UploadPage({ onSessionCreated }) {
             Example: C001, SKU-A, Blue T-Shirt Large, 20, GRP-1, Dealer Alpha
           </p>
           <p className="text-xs text-gray-500 mt-2">
-            Notes: <span className="font-semibold">case_id</span>, <span className="font-semibold">sku</span>, and <span className="font-semibold">qty</span> are required.
-            <span className="ml-1">Description can be blank if needed.</span>
+            Notes: <span className="font-semibold">case_id</span>,{' '}
+            <span className="font-semibold">sku</span>, and{' '}
+            <span className="font-semibold">qty</span> are required. Description can be blank if needed.
           </p>
         </div>
 
