@@ -303,6 +303,33 @@ app.get('/api/sessions/:id', async (req, res) => {
   catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// REOPEN SESSION
+app.patch('/api/sessions/:id/reopen', async (req, res) => {
+  const requester = req.body?.reopened_by;
+  try {
+    const sessionResult = await pool.query('SELECT * FROM sessions WHERE id=$1', [req.params.id]);
+    if (sessionResult.rows.length === 0) return res.status(404).json({ error: 'Session not found' });
+    if (!sessionResult.rows[0].closed_at) return res.status(400).json({ error: 'Session is not closed' });
+    await pool.query('UPDATE sessions SET closed_at=NULL WHERE id=$1', [req.params.id]);
+    await logAudit(requester || 'unknown', 'SESSION_REOPENED', `Reopened session "${sessionResult.rows[0].name}" (ID: ${req.params.id})`);
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// DELETE SESSION
+app.delete('/api/sessions/:id', async (req, res) => {
+  const requester = req.headers['x-username'];
+  if (!await isAdmin(requester)) return res.status(403).json({ error: 'Admin access required' });
+  try {
+    const sessionResult = await pool.query('SELECT name FROM sessions WHERE id=$1', [req.params.id]);
+    if (sessionResult.rows.length === 0) return res.status(404).json({ error: 'Session not found' });
+    const sessionName = sessionResult.rows[0].name;
+    await pool.query('DELETE FROM sessions WHERE id=$1', [req.params.id]);
+    await logAudit(requester, 'SESSION_DELETED', `Deleted session "${sessionName}" (ID: ${req.params.id})`);
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 app.get('/api/sessions/:id/cases', async (req, res) => {
   try { const result = await pool.query(`SELECT DISTINCT case_id FROM manifest WHERE session_id=$1 ORDER BY case_id`, [req.params.id]); res.json(result.rows.map(r => r.case_id)); }
   catch (err) { res.status(500).json({ error: err.message }); }
