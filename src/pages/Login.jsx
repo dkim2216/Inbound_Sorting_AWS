@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { LogIn, User, Lock, RefreshCw, AlertCircle } from 'lucide-react';
+import { LogIn, User, Lock, Boxes, AlertCircle } from 'lucide-react';
 
 const CS_TEAL = '#00C9A7';
 const CS_NAVY = '#0D1B4B';
@@ -84,12 +84,12 @@ export default function Login({ onLogin }) {
             className="inline-flex items-center justify-center w-14 h-14 rounded-2xl mb-4"
             style={{ background: CS_TEAL }}
           >
-            <RefreshCw size={26} color="white" />
+            <Boxes size={26} color="white" />
           </div>
           <h1 className="text-2xl font-bold" style={{ color: CS_NAVY }}>
-            Cello Square
+            Company Name
           </h1>
-          <p className="text-sm text-gray-400 mt-1 tracking-wide">Inbound Hub Scanner</p>
+          <p className="text-sm text-gray-400 mt-1 tracking-wide">Sorting Application</p>
         </div>
 
         {canResume && (
