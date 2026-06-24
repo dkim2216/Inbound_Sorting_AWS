@@ -22,17 +22,28 @@ export default function App() {
 
   const inactivityTimer = useRef(null);
   const warningTimer = useRef(null);
+  const userRef = useRef(null);
 
-  const handleLogout = useCallback(async (currentUser) => {
-    const u = currentUser || user;
+  // Keep userRef in sync so handleLogout always has the latest value
+  useEffect(() => { userRef.current = user; }, [user]);
+
+  const handleLogout = useCallback(async () => {
+    const u = userRef.current;
     if (u) {
       try {
         await fetch(`/api/lock/operator/${encodeURIComponent(u)}`, { method: 'DELETE' });
       } catch (e) {
         console.warn('Could not release locks on logout', e);
       }
-      // Use sendBeacon so the request survives component unmount
-      navigator.sendBeacon('/api/auth/logout', new Blob([JSON.stringify({ username: u })], { type: 'application/json' }));
+      try {
+        await fetch('/api/auth/logout', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: u }),
+        });
+      } catch (e) {
+        console.warn('Could not log logout', e);
+      }
     }
     localStorage.setItem('sorter_saved_at', new Date().toISOString());
     localStorage.removeItem('sorter_is_admin');
@@ -40,7 +51,7 @@ export default function App() {
     setIsAdmin(false);
     setCurrentPage('sessions');
     setShowInactivityWarning(false);
-  }, [user]);
+  }, []);
 
   const resetInactivityTimer = useCallback(() => {
     clearTimeout(inactivityTimer.current);
