@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import Sidebar from './components/Sidebar';
 import Login from './pages/Login';
 import Sessions from './pages/Sessions';
@@ -8,6 +8,9 @@ import Progress from './pages/Progress';
 import Dealers from './pages/Dealers';
 import Admin from './pages/Admin';
 
+const INACTIVITY_LIMIT = 60 * 60 * 1000;  // 60 min
+const WARNING_BEFORE   = 5  * 60 * 1000;  // warn at 55 min
+
 export default function App() {
   const [user, setUser] = useState(null);
   const [isAdmin, setIsAdmin] = useState(false);
@@ -15,6 +18,58 @@ export default function App() {
   const [sessions, setSessions] = useState([]);
   const [activeSession, setActiveSession] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [showInactivityWarning, setShowInactivityWarning] = useState(false);
+
+  const inactivityTimer = useRef(null);
+  const warningTimer = useRef(null);
+
+  const handleLogout = useCallback(async (currentUser) => {
+    const u = currentUser || user;
+    if (u) {
+      try {
+        await fetch(`/api/lock/operator/${encodeURIComponent(u)}`, { method: 'DELETE' });
+      } catch (e) {
+        console.warn('Could not release locks on logout', e);
+      }
+    }
+    localStorage.setItem('sorter_saved_at', new Date().toISOString());
+    localStorage.removeItem('sorter_is_admin');
+    setUser(null);
+    setIsAdmin(false);
+    setCurrentPage('sessions');
+    setShowInactivityWarning(false);
+  }, [user]);
+
+  const resetInactivityTimer = useCallback(() => {
+    clearTimeout(inactivityTimer.current);
+    clearTimeout(warningTimer.current);
+    setShowInactivityWarning(false);
+
+    warningTimer.current = setTimeout(() => {
+      setShowInactivityWarning(true);
+    }, INACTIVITY_LIMIT - WARNING_BEFORE);
+
+    inactivityTimer.current = setTimeout(() => {
+      handleLogout();
+    }, INACTIVITY_LIMIT);
+  }, [handleLogout]);
+
+  // Start/stop inactivity tracking when user logs in/out
+  useEffect(() => {
+    if (!user) {
+      clearTimeout(inactivityTimer.current);
+      clearTimeout(warningTimer.current);
+      return;
+    }
+    const events = ['click', 'keydown', 'touchstart', 'scroll'];
+    events.forEach(e => window.addEventListener(e, resetInactivityTimer, { passive: true }));
+    resetInactivityTimer();
+    return () => {
+      events.forEach(e => window.removeEventListener(e, resetInactivityTimer));
+      clearTimeout(inactivityTimer.current);
+      clearTimeout(warningTimer.current);
+    };
+  }, [user, resetInactivityTimer]);
 
   useEffect(() => {
     const savedUser = localStorage.getItem('sorter_user');
@@ -76,21 +131,6 @@ export default function App() {
       setActiveSession(Number(resumeSessionId));
       setCurrentPage('scan');
     }
-  };
-
-  const handleLogout = async () => {
-    if (user) {
-      try {
-        await fetch(`/api/lock/operator/${encodeURIComponent(user)}`, { method: 'DELETE' });
-      } catch (e) {
-        console.warn('Could not release locks on logout', e);
-      }
-    }
-    localStorage.setItem('sorter_saved_at', new Date().toISOString());
-    localStorage.removeItem('sorter_is_admin');
-    setUser(null);
-    setIsAdmin(false);
-    setCurrentPage('sessions');
   };
 
   const handleSessionCreated = (newSession) => {
@@ -160,6 +200,24 @@ export default function App() {
       <main className="flex-1 overflow-auto pb-16 lg:pb-0">
         {renderPage()}
       </main>
+
+      {/* Inactivity warning modal */}
+      {showInactivityWarning && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: 'rgba(13,27,75,0.6)' }}>
+          <div className="bg-white rounded-2xl p-6 shadow-xl max-w-sm w-full text-center">
+            <div className="text-4xl mb-3">⏱️</div>
+            <h3 className="text-lg font-bold mb-2" style={{ color: '#0D1B4B' }}>Still there?</h3>
+            <p className="text-sm text-gray-500 mb-5">You'll be logged out in 5 minutes due to inactivity.</p>
+            <button
+              onClick={resetInactivityTimer}
+              className="w-full py-3 rounded-xl text-white font-semibold"
+              style={{ background: '#00C9A7' }}
+            >
+              Stay Logged In
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
