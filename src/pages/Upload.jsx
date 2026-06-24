@@ -4,7 +4,7 @@ import { Upload, AlertCircle, CheckCircle } from 'lucide-react';
 const CS_TEAL = '#00C9A7';
 const CS_NAVY = '#0D1B4B';
 
-export default function UploadPage({ onSessionCreated }) {
+export default function UploadPage({ onSessionCreated, user }) {
   const [name, setName] = useState('');
   const [file, setFile] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -51,7 +51,7 @@ export default function UploadPage({ onSessionCreated }) {
     try {
       setLoading(true);
       const formData = new FormData();
-      formData.append('name', name);
+      formData.append('name', name); formData.append('uploaded_by', user || '');
       formData.append('file', file);
 
       const res = await fetch('/api/sessions', {
