@@ -307,7 +307,7 @@ export default function Scan({ sessionId, sessions, user }) {
       const res = await fetch(`/api/manifest/${id}/done`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ actual_qty: actualQty, remark: dest.remark || '', done: true }),
+        body: JSON.stringify({ actual_qty: actualQty, remark: dest.remark || '', done: true, scanned_by: user }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to update item');
