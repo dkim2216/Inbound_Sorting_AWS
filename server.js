@@ -68,6 +68,7 @@ async function initDB() {
     await pool.query(`CREATE EXTENSION IF NOT EXISTS pgcrypto`);
     await pool.query(`CREATE TABLE IF NOT EXISTS users (id SERIAL PRIMARY KEY, username VARCHAR(100) UNIQUE NOT NULL, password_hash VARCHAR(255) NOT NULL, created_at TIMESTAMP DEFAULT NOW())`);
     await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE`);
+    await pool.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_blocked BOOLEAN DEFAULT FALSE`);
     await pool.query(`CREATE TABLE IF NOT EXISTS audit_log (id SERIAL PRIMARY KEY, username VARCHAR(100), action VARCHAR(100) NOT NULL, details TEXT, created_at TIMESTAMP DEFAULT NOW())`);
     await pool.query(`CREATE INDEX IF NOT EXISTS idx_audit_log_created ON audit_log(created_at DESC)`);
     console.log('✓ Database initialized');
@@ -144,7 +145,7 @@ app.post('/api/auth/login', async (req, res) => {
   if (!username || !password) return res.status(400).json({ error: 'Username and password required' });
   try {
     const result = await pool.query(
-      `SELECT username, is_admin FROM users WHERE LOWER(username)=LOWER($1) AND password_hash=crypt($2,password_hash)`,
+      `SELECT username, is_admin, is_blocked FROM users WHERE LOWER(username)=LOWER($1) AND password_hash=crypt($2,password_hash)`,
       [String(username).trim(), password]
     );
     if (result.rows.length === 0) {
@@ -152,9 +153,19 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid username or password' });
     }
     const row = result.rows[0];
+    if (row.is_blocked) {
+      await logAudit(row.username, 'LOGIN_BLOCKED', `Blocked user attempted login`);
+      return res.status(403).json({ error: 'Account is blocked. Contact an administrator.' });
+    }
     await logAudit(row.username, 'LOGIN', `User logged in`);
     res.json({ ok: true, username: row.username, is_admin: row.is_admin === true });
   } catch (err) { console.error('Login error:', err); res.status(500).json({ error: 'Server error' }); }
+});
+
+app.post('/api/auth/logout', async (req, res) => {
+  const { username } = req.body || {};
+  if (username) await logAudit(username, 'LOGOUT', 'User logged out');
+  res.json({ ok: true });
 });
 
 // ════════════════════════════════════════════════════════════════════
@@ -164,7 +175,7 @@ app.get('/api/admin/users', async (req, res) => {
   const requester = req.headers['x-username'];
   if (!await isAdmin(requester)) return res.status(403).json({ error: 'Admin access required' });
   try {
-    const result = await pool.query(`SELECT id, username, is_admin, created_at FROM users ORDER BY created_at DESC`);
+    const result = await pool.query(`SELECT id, username, is_admin, is_blocked, created_at FROM users ORDER BY created_at DESC`);
     res.json(result.rows);
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
@@ -212,6 +223,31 @@ app.patch('/api/admin/users/:username/password', async (req, res) => {
     );
     if (r.rows.length === 0) return res.status(404).json({ error: 'User not found' });
     await logAudit(requester, 'PASSWORD_RESET', `Reset password for: ${req.params.username}`);
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.patch('/api/admin/users/:username/block', async (req, res) => {
+  const requester = req.headers['x-username'];
+  if (!await isAdmin(requester)) return res.status(403).json({ error: 'Admin access required' });
+  const target = req.params.username;
+  if (target.toLowerCase() === requester.toLowerCase()) return res.status(400).json({ error: 'Cannot block your own account' });
+  try {
+    const r = await pool.query(`UPDATE users SET is_blocked=TRUE WHERE LOWER(username)=LOWER($1) RETURNING username`, [target]);
+    if (r.rows.length === 0) return res.status(404).json({ error: 'User not found' });
+    await logAudit(requester, 'USER_BLOCKED', `Blocked user: ${target}`);
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.patch('/api/admin/users/:username/unblock', async (req, res) => {
+  const requester = req.headers['x-username'];
+  if (!await isAdmin(requester)) return res.status(403).json({ error: 'Admin access required' });
+  const target = req.params.username;
+  try {
+    const r = await pool.query(`UPDATE users SET is_blocked=FALSE WHERE LOWER(username)=LOWER($1) RETURNING username`, [target]);
+    if (r.rows.length === 0) return res.status(404).json({ error: 'User not found' });
+    await logAudit(requester, 'USER_UNBLOCKED', `Unblocked user: ${target}`);
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
