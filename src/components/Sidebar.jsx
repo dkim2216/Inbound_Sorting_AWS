@@ -148,6 +148,15 @@ export default function Sidebar({ currentPage, onPageChange, activeSession, user
             </button>
           );
         })}
+        {/* Logout button — mobile only */}
+        <button
+          onClick={onLogout}
+          className="flex-1 flex flex-col items-center justify-center py-2 gap-0.5 transition-colors"
+          style={{ color: '#9CA3AF' }}
+        >
+          <LogOut size={21} strokeWidth={1.8} />
+          <span className="text-[10px] font-medium">Logout</span>
+        </button>
       </nav>
     </>
   );
