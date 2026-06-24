@@ -428,7 +428,7 @@ app.post('/api/sessions/:id/complete', async (req, res) => {
 app.post('/api/sessions/:id/close', async (req, res) => {
   try {
     const sessionId = req.params.id;
-    const closed_by = req.body?.closed_by || 'Unknown';
+    const closed_by = req.body?.completed_by || req.body?.closed_by || 'Unknown';
     const sessionResult = await pool.query('SELECT * FROM sessions WHERE id=$1', [sessionId]);
     if (sessionResult.rows.length === 0) return res.status(404).json({ error: 'Session not found' });
     const session = sessionResult.rows[0];
