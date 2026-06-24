@@ -118,6 +118,7 @@ export default function App() {
             onRefresh={fetchSessions}
             loading={loading}
             user={user}
+            isAdmin={isAdmin}
           />
         );
       case 'upload':
