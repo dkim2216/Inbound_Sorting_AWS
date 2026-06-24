@@ -28,7 +28,6 @@ export default function Login({ onLogin }) {
     }
   }, []);
 
-  // Resume is only offered when the typed username matches the saved session's owner
   const canResume =
     savedSession &&
     name.trim().toLowerCase() === savedSession.user.trim().toLowerCase();
@@ -58,6 +57,7 @@ export default function Login({ onLogin }) {
       }
 
       const verifiedUser = data.username;
+      const adminFlag = data.is_admin === true;
 
       if (!resume) {
         localStorage.removeItem('sorter_active_session');
@@ -66,7 +66,7 @@ export default function Login({ onLogin }) {
       }
 
       localStorage.setItem('sorter_user', verifiedUser);
-      onLogin(verifiedUser, resume ? savedSession?.sessionId : null);
+      onLogin(verifiedUser, resume ? savedSession?.sessionId : null, adminFlag);
     } catch (err) {
       setError('Cannot reach server — check your connection');
       setLoading(false);
@@ -79,7 +79,6 @@ export default function Login({ onLogin }) {
       style={{ background: '#F8FAFB' }}
     >
       <div className="w-full max-w-sm">
-        {/* Logo */}
         <div className="text-center mb-8">
           <div
             className="inline-flex items-center justify-center w-14 h-14 rounded-2xl mb-4"
@@ -88,12 +87,11 @@ export default function Login({ onLogin }) {
             <RefreshCw size={26} color="white" />
           </div>
           <h1 className="text-2xl font-bold" style={{ color: CS_NAVY }}>
-            Company Name
+            Cello Square
           </h1>
           <p className="text-sm text-gray-400 mt-1 tracking-wide">Inbound Hub Scanner</p>
         </div>
 
-        {/* Resume card — only when username matches saved session owner */}
         {canResume && (
           <div
             className="rounded-2xl p-4 mb-4 border-2"
@@ -111,7 +109,6 @@ export default function Login({ onLogin }) {
           </div>
         )}
 
-        {/* Login card */}
         <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-6">
           <div className="mb-4">
             <label className="block text-xs font-semibold uppercase tracking-widest mb-2" style={{ color: CS_NAVY }}>
