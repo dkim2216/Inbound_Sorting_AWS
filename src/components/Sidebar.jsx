@@ -35,9 +35,9 @@ export default function Sidebar({ currentPage, onPageChange, activeSession, user
       >
         <div className="px-6 py-5 border-b border-gray-100">
           <h1 className="text-lg font-bold leading-tight" style={{ color: CS_NAVY }}>
-            Cello Square
+            Company Name
           </h1>
-          <p className="text-xs text-gray-400 font-medium tracking-wide">Inbound Hub Scanner</p>
+          <p className="text-xs text-gray-400 font-medium tracking-wide">Sorting Application</p>
         </div>
 
         <nav className="flex-1 p-4 space-y-1">
