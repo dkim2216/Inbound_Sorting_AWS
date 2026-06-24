@@ -20,7 +20,7 @@ export default function Sessions({ sessions, onSessionSelected, onRefresh, loadi
     e.stopPropagation();
     try {
       setSendingId(sessionId);
-      const res = await fetch(`/api/sessions/${sessionId}/complete`, { method: 'POST' });
+      const res = await fetch(`/api/sessions/${sessionId}/complete`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sent_by: user }) });
       if (res.ok) {
         showMsg('success', 'Report emailed to admin successfully.');
       } else {
@@ -45,7 +45,7 @@ export default function Sessions({ sessions, onSessionSelected, onRefresh, loadi
     setConfirmClose(null);
     try {
       setClosingId(sessionId);
-      const res = await fetch(`/api/sessions/${sessionId}/close`, { method: 'POST' });
+      const res = await fetch(`/api/sessions/${sessionId}/close`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ closed_by: user }) });
       if (res.ok) {
         showMsg('success', 'Session closed. Final report emailed to admin.');
         onRefresh();
