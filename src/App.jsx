@@ -31,6 +31,15 @@ export default function App() {
       } catch (e) {
         console.warn('Could not release locks on logout', e);
       }
+      try {
+        await fetch('/api/auth/logout', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: u }),
+        });
+      } catch (e) {
+        console.warn('Could not log logout', e);
+      }
     }
     localStorage.setItem('sorter_saved_at', new Date().toISOString());
     localStorage.removeItem('sorter_is_admin');
