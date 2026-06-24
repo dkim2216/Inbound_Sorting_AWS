@@ -4,7 +4,7 @@ import { useState } from 'react';
 const CS_TEAL = '#00C9A7';
 const CS_NAVY = '#0D1B4B';
 
-export default function Sessions({ sessions, onSessionSelected, onRefresh, loading }) {
+export default function Sessions({ sessions, onSessionSelected, onRefresh, loading, user }) {
   const [sendingId, setSendingId]   = useState(null);
   const [closingId, setClosingId]   = useState(null);
   const [confirmClose, setConfirmClose] = useState(null); // session to confirm close
