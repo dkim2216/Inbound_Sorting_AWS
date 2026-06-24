@@ -1,22 +1,25 @@
-import { Upload, ScanLine, BarChart3, List, Users, LogOut } from 'lucide-react';
+import { Upload, ScanLine, BarChart3, List, Users, LogOut, ShieldCheck } from 'lucide-react';
 
 const CS_TEAL  = '#00C9A7';
 const CS_NAVY  = '#0D1B4B';
 const CS_LIGHT = '#E6FAF7';
 
-const menuItems = [
-  { id: 'sessions',  label: 'Sessions',  icon: List },
-  { id: 'upload',    label: 'Upload',    icon: Upload },
-  { id: 'scan',      label: 'Scan',      icon: ScanLine },
-  { id: 'progress',  label: 'Progress',  icon: BarChart3 },
-  { id: 'dealers',   label: 'Dealers',   icon: Users },
-];
+export default function Sidebar({ currentPage, onPageChange, activeSession, user, isAdmin, onLogout }) {
+  const allItems = [
+    { id: 'sessions', label: 'Sessions',  icon: List,        adminOnly: false },
+    { id: 'upload',   label: 'Upload',    icon: Upload,      adminOnly: true  },
+    { id: 'scan',     label: 'Scan',      icon: ScanLine,    adminOnly: false },
+    { id: 'progress', label: 'Progress',  icon: BarChart3,   adminOnly: false },
+    { id: 'dealers',  label: 'Dealers',   icon: Users,       adminOnly: false },
+    { id: 'admin',    label: 'Admin',     icon: ShieldCheck, adminOnly: true  },
+  ];
 
-export default function Sidebar({ currentPage, onPageChange, activeSession, user, onLogout }) {
-  const items = menuItems.map(item => ({
-    ...item,
-    disabled: ['scan', 'progress', 'dealers'].includes(item.id) && !activeSession,
-  }));
+  const items = allItems
+    .filter(item => !item.adminOnly || isAdmin)
+    .map(item => ({
+      ...item,
+      disabled: ['scan', 'progress', 'dealers'].includes(item.id) && !activeSession,
+    }));
 
   const handleNavigate = (id) => {
     const item = items.find(m => m.id === id);
@@ -30,17 +33,15 @@ export default function Sidebar({ currentPage, onPageChange, activeSession, user
         className="hidden lg:flex flex-col w-64 h-screen border-r border-gray-100"
         style={{ background: '#FAFCFB' }}
       >
-        {/* Header */}
         <div className="px-6 py-5 border-b border-gray-100">
           <h1 className="text-lg font-bold leading-tight" style={{ color: CS_NAVY }}>
-            Company Name
+            Cello Square
           </h1>
           <p className="text-xs text-gray-400 font-medium tracking-wide">Inbound Hub Scanner</p>
         </div>
 
-        {/* Navigation */}
         <nav className="flex-1 p-4 space-y-1">
-          {items.map(({ id, label, icon: Icon, disabled }) => {
+          {items.map(({ id, label, icon: Icon, disabled, adminOnly }) => {
             const isActive = currentPage === id;
             return (
               <button
@@ -67,19 +68,30 @@ export default function Sidebar({ currentPage, onPageChange, activeSession, user
                   style={{ background: isActive ? CS_TEAL : 'transparent' }}
                 />
                 <Icon size={19} />
-                <span>{label}</span>
+                <span className="flex-1 text-left">{label}</span>
+                {id === 'admin' && (
+                  <span className="text-xs font-bold px-1.5 py-0.5 rounded" style={{ background: '#E6FAF7', color: CS_TEAL }}>
+                    ADM
+                  </span>
+                )}
               </button>
             );
           })}
         </nav>
 
-        {/* Footer: user + logout */}
         <div className="p-5 border-t border-gray-100">
           {user && (
             <div className="flex items-center justify-between mb-3">
               <div>
                 <p className="text-xs text-gray-400">Logged in as</p>
-                <p className="text-sm font-bold" style={{ color: CS_NAVY }}>{user}</p>
+                <div className="flex items-center gap-1.5">
+                  <p className="text-sm font-bold" style={{ color: CS_NAVY }}>{user}</p>
+                  {isAdmin && (
+                    <span className="text-xs font-bold px-1.5 py-0.5 rounded" style={{ background: '#E6FAF7', color: CS_TEAL }}>
+                      Admin
+                    </span>
+                  )}
+                </div>
               </div>
               <button
                 onClick={onLogout}
@@ -94,7 +106,7 @@ export default function Sidebar({ currentPage, onPageChange, activeSession, user
           <p className="text-[10px] text-gray-400 leading-relaxed">
             © 2026 Made by{' '}
             <span className="font-semibold" style={{ color: CS_TEAL }}>kim.jongwon</span>
-            <br />v1.0.0
+            <br />v1.1.0
           </p>
         </div>
       </div>
