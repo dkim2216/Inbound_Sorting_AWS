@@ -6,21 +6,22 @@ import Upload from './pages/Upload';
 import Scan from './pages/Scan';
 import Progress from './pages/Progress';
 import Dealers from './pages/Dealers';
+import Admin from './pages/Admin';
 
 export default function App() {
   const [user, setUser] = useState(null);
+  const [isAdmin, setIsAdmin] = useState(false);
   const [currentPage, setCurrentPage] = useState('sessions');
   const [sessions, setSessions] = useState([]);
   const [activeSession, setActiveSession] = useState(null);
   const [loading, setLoading] = useState(false);
 
-  // Restore user from localStorage on mount
   useEffect(() => {
     const savedUser = localStorage.getItem('sorter_user');
-    if (savedUser) setUser(savedUser);
+    const savedAdmin = localStorage.getItem('sorter_is_admin') === 'true';
+    if (savedUser) { setUser(savedUser); setIsAdmin(savedAdmin); }
   }, []);
 
-  // Once user is set, fetch sessions and restore active session
   useEffect(() => {
     if (user) {
       fetchSessions().then(() => {
@@ -33,7 +34,6 @@ export default function App() {
     }
   }, [user]);
 
-  // Persist active session to localStorage whenever it changes
   useEffect(() => {
     if (activeSession) {
       localStorage.setItem('sorter_active_session', activeSession);
@@ -43,15 +43,11 @@ export default function App() {
     }
   }, [activeSession]);
 
-  // Release all locks when the tab/window closes
   useEffect(() => {
     const handleUnload = () => {
       const currentUser = localStorage.getItem('sorter_user');
       if (currentUser) {
-        // sendBeacon can only send POST — must use the POST release route
-        navigator.sendBeacon(
-          `/api/lock/operator/${encodeURIComponent(currentUser)}/release`
-        );
+        navigator.sendBeacon(`/api/lock/operator/${encodeURIComponent(currentUser)}/release`);
       }
     };
     window.addEventListener('beforeunload', handleUnload);
@@ -72,8 +68,10 @@ export default function App() {
     }
   };
 
-  const handleLogin = (name, resumeSessionId) => {
+  const handleLogin = (name, resumeSessionId, adminFlag) => {
     setUser(name);
+    setIsAdmin(adminFlag === true);
+    localStorage.setItem('sorter_is_admin', adminFlag === true ? 'true' : 'false');
     if (resumeSessionId) {
       setActiveSession(Number(resumeSessionId));
       setCurrentPage('scan');
@@ -81,7 +79,6 @@ export default function App() {
   };
 
   const handleLogout = async () => {
-    // Release all locks held by this operator
     if (user) {
       try {
         await fetch(`/api/lock/operator/${encodeURIComponent(user)}`, { method: 'DELETE' });
@@ -90,7 +87,9 @@ export default function App() {
       }
     }
     localStorage.setItem('sorter_saved_at', new Date().toISOString());
+    localStorage.removeItem('sorter_is_admin');
     setUser(null);
+    setIsAdmin(false);
     setCurrentPage('sessions');
   };
 
@@ -118,23 +117,30 @@ export default function App() {
             onSessionSelected={handleSessionSelected}
             onRefresh={fetchSessions}
             loading={loading}
+            user={user}
           />
         );
       case 'upload':
-        return <Upload onSessionCreated={handleSessionCreated} />;
+        return isAdmin
+          ? <Upload onSessionCreated={handleSessionCreated} user={user} />
+          : <div className="p-8 text-center text-gray-400">Access restricted to admins.</div>;
       case 'scan':
         return (
           <Scan
             sessionId={activeSession}
             onSessionChange={setActiveSession}
             sessions={sessions}
-            user={user}                  // ← passed for locking
+            user={user}
           />
         );
       case 'progress':
         return <Progress sessionId={activeSession} sessions={sessions} />;
       case 'dealers':
         return <Dealers sessionId={activeSession} sessions={sessions} />;
+      case 'admin':
+        return isAdmin
+          ? <Admin user={user} />
+          : <div className="p-8 text-center text-gray-400">Access restricted to admins.</div>;
       default:
         return null;
     }
@@ -147,6 +153,7 @@ export default function App() {
         onPageChange={setCurrentPage}
         activeSession={activeSession}
         user={user}
+        isAdmin={isAdmin}
         onLogout={handleLogout}
       />
       <main className="flex-1 overflow-auto pb-16 lg:pb-0">
